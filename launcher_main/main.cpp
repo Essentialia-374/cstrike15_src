@@ -115,6 +115,44 @@ static char *GetBaseDir( const char *pszBuffer )
 	return basedir;
 }
 
+static void LogLauncherError( const char *pRootDir, const char *pOperation, DWORD errorCode )
+{
+    if ( !pRootDir || !pOperation )
+        return;
+
+    char logPath[ MAX_PATH ];
+    _snprintf( logPath, sizeof( logPath ), "%s\\launcher_log.txt", pRootDir );
+    logPath[ sizeof( logPath ) - 1 ] = '\0';
+
+    FILE *fp = fopen( logPath, "a" );
+    if ( !fp )
+        return;
+
+    SYSTEMTIME localTime;
+    GetLocalTime( &localTime );
+
+    char *pszError = NULL;
+    DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+    if ( FormatMessageA( flags, NULL, errorCode, MAKELANGID( LANG_NEUTRAL, SUBLANG_DEFAULT ), (LPSTR)&pszError, 0, NULL ) == 0 )
+    {
+        pszError = NULL;
+    }
+
+    fprintf( fp, "%04u-%02u-%02u %02u:%02u:%02u - %s (0x%08lX)%s%s\n",
+             localTime.wYear, localTime.wMonth, localTime.wDay,
+             localTime.wHour, localTime.wMinute, localTime.wSecond,
+             pOperation, errorCode,
+             pszError ? ": " : "",
+             pszError ? pszError : "" );
+
+    if ( pszError )
+    {
+        LocalFree( pszError );
+    }
+
+    fclose( fp );
+}
+
 int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow )
 {
 	// Must add 'bin' to the path....
@@ -143,13 +181,28 @@ int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 #ifdef _DEBUG
 	int len = 
 #endif
-	_snprintf( szBuffer, sizeof( szBuffer ), "PATH=%s\\bin%s\\;%s", pRootDir, pBinPath, pPath );
-	szBuffer[sizeof( szBuffer ) - 1] = '\0';
-	assert( len < sizeof( szBuffer ) );
-	_putenv( szBuffer );
+    _snprintf( szBuffer, sizeof( szBuffer ), "PATH=%s\\bin%s\\;%s", pRootDir, pBinPath, pPath ? pPath : "" );
+    szBuffer[sizeof( szBuffer ) - 1] = '\0';
+    assert( len < sizeof( szBuffer ) );
+    _putenv( szBuffer );
 
-	// Assemble the full path to our "launcher.dll"
-	_snprintf( szBuffer, sizeof( szBuffer ), "%s\\bin%s\\launcher.dll", pRootDir, pBinPath );
+    // Ensure the DLL search path includes our bin directory even if PATH modification fails
+    char szBinDirectory[MAX_PATH];
+    _snprintf( szBinDirectory, sizeof( szBinDirectory ), "%s\\bin%s", pRootDir, pBinPath );
+    szBinDirectory[sizeof( szBinDirectory ) - 1] = '\0';
+    if ( !SetDllDirectory( szBinDirectory ) )
+    {
+        DWORD err = GetLastError();
+        char logContext[ MAX_PATH + 64 ];
+        _snprintf( logContext, sizeof( logContext ), "SetDllDirectory failed for %s", szBinDirectory );
+        logContext[ sizeof( logContext ) - 1 ] = '\0';
+        LogLauncherError( pRootDir, logContext, err );
+        MessageBox( 0, "Failed to set DLL directory", "Launcher Error", MB_OK );
+        return 0;
+    }
+
+    // Assemble the full path to our "launcher.dll"
+    _snprintf( szBuffer, sizeof( szBuffer ), "%s\\bin%s\\launcher.dll", pRootDir, pBinPath );
 	szBuffer[sizeof( szBuffer ) - 1] = '\0';
 
 	// STEAM OK ... filesystem not mounted yet
@@ -160,8 +213,14 @@ int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 #endif
 	if ( !launcher )
 	{
+		DWORD err = GetLastError();
+		char logContext[ MAX_PATH + 64 ];
+		_snprintf( logContext, sizeof( logContext ), "LoadLibraryEx failed for %s", szBuffer );
+		logContext[ sizeof( logContext ) - 1 ] = '\0';
+		LogLauncherError( pRootDir, logContext, err );
+
 		char *pszError;
-		FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, GetLastError(), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR)&pszError, 0, NULL);
+		FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR)&pszError, 0, NULL);
 
 		char szBuf[1024];
 		_snprintf(szBuf, sizeof( szBuf ), "Failed to load the launcher DLL:\n\n%s", pszError);
