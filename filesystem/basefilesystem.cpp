@@ -15,6 +15,7 @@
 #include "tier0/stacktools.h"
 #include "generichash.h"
 #include "tier1/utllinkedlist.h"
+#include "tier1/strtools.h"
 #include "filesystem/IQueuedLoader.h"
 #include "filesystem/IXboxInstaller.h"
 #include "tier2/tier2.h"
@@ -76,6 +77,35 @@ bool TeardownFios();
 	#define FS_DVDDEV_REMAP_ROOT ""
 	#define FS_DVDDEV_ROOT "dvddev???:::"
 	#define FS_EXCLUDE_PATHS_FILENAME "allbad_exclude_paths.txt"
+#endif
+
+#ifdef SUPPORT_VPK
+static bool AddVPKFilesForPath_Internal( CBaseFileSystem *pFileSystem, const char *pPath )
+{
+	bool bFoundAnyVPK = false;
+
+	for ( int i = 1; i < 99; ++i )
+	{
+		char newVPK[MAX_PATH];
+		sprintf( newVPK, "%s/pak%02d_dir.vpk", pPath, i );
+		FILE *pstdiofile = fopen( newVPK, "rb" );
+		if ( pstdiofile )
+		{
+			fclose( pstdiofile );
+			sprintf( newVPK, "%s/pak%02d.vpk", pPath, i );
+			pFileSystem->AddVPKFile( newVPK );
+			bFoundAnyVPK = true;
+		}
+		else
+		{
+			break;
+		}
+	}
+
+	return bFoundAnyVPK;
+}
+
+static bool s_bWarnedAboutMissingCSGOVPKs = false;
 #endif
 
 #ifdef _GAMECONSOLE
@@ -2846,6 +2876,9 @@ void CBaseFileSystem::AddSearchPath( const char *pPath, const char *pathID, Sear
 	// This layout matches the Xbox's search path layout, when the Xbox does late bind the DLC
 	// any platform, game, or mod search paths get subverted in order to prepend the DLC path
 	const char *pGameName = "csgo";
+#ifdef SUPPORT_VPK
+	bool bMountedAnyVPKs = false;
+#endif
 
 	// CSGO compatibility VPKs
 	if ( const char *pActualPathID = pathID ? StringAfterPrefix( pathID, "COMPAT:" ) : NULL )
@@ -2857,6 +2890,7 @@ void CBaseFileSystem::AddSearchPath( const char *pPath, const char *pathID, Sear
 			char newVPK[ MAX_PATH ] = {};
 			sprintf( newVPK, "%s/pakxv_%s.vpk", pGameName, pPath );
 			AddVPKFile( newVPK, addType );
+			bMountedAnyVPKs = true;
 			return;
 		}
 #endif
@@ -2926,23 +2960,9 @@ void CBaseFileSystem::AddSearchPath( const char *pPath, const char *pathID, Sear
 				AddSearchPathInternal( szUpdatePath, pathID, addType, true );
 
 #ifdef SUPPORT_VPK
-				// scan for vpk's
-				for( int i = 1 ; i < 99; i++ )
+				if ( AddVPKFilesForPath_Internal( this, szUpdatePath ) )
 				{
-					char newVPK[MAX_PATH];
-					sprintf( newVPK, "%s/pak%02d_dir.vpk", szUpdatePath, i );
-					// we will fopen to bypass pathing, etc
-					FILE *pstdiofile = fopen( newVPK, "rb" );
-					if ( pstdiofile )
-					{
-						fclose( pstdiofile );
-						sprintf( newVPK, "%s/pak%02d.vpk", szUpdatePath, i );
-						AddVPKFile( newVPK );
-					}
-					else
-					{
-						break;
-					}
+					bMountedAnyVPKs = true;
 				}
 #endif
 			}
@@ -2955,22 +2975,18 @@ void CBaseFileSystem::AddSearchPath( const char *pPath, const char *pathID, Sear
 	AddSearchPathInternal( pPath, pathID, addType, true );
 
 #ifdef SUPPORT_VPK
-	// scan for vpk's
-	for( int i = 1 ; i < 99; i++ )
+	bMountedAnyVPKs = AddVPKFilesForPath_Internal( this, pPath ) || bMountedAnyVPKs;
+	if ( !bMountedAnyVPKs )
 	{
-		char newVPK[MAX_PATH];
-		sprintf( newVPK, "%s/pak%02d_dir.vpk", pPath, i );
-		// we will fopen to bypass pathing, etc
-		FILE *pstdiofile = fopen( newVPK, "rb" );
-		if ( pstdiofile )
+		const char *pDirectoryName = V_UnqualifiedFileName( pPath );
+		if ( pDirectoryName && !V_stricmp( pDirectoryName, "csgo" ) && !s_bWarnedAboutMissingCSGOVPKs )
 		{
-			fclose( pstdiofile );
-			sprintf( newVPK, "%s/pak%02d.vpk", pPath, i );
-			AddVPKFile( newVPK );
-		}
-		else
-		{
-			break;
+			Warning( "No CS:GO VPK archives were found in '%s'.\n", pPath );
+			Warning( "Please install the May 18 2017 CS:GO game content from Steam using:\n" );
+			Warning( "    download_depot 730 731 7043469183016184477\n" );
+			Warning( "    download_depot 730 732 4047004309608881181\n" );
+			Warning( "and copy the downloaded directories into your csgo folder.\n" );
+			s_bWarnedAboutMissingCSGOVPKs = true;
 		}
 	}
 #endif
